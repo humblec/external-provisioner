@@ -132,6 +132,23 @@ const (
 	annStorageProvisioner     = "volume.kubernetes.io/storage-provisioner"
 	annSelectedNode           = "volume.kubernetes.io/selected-node"
 
+	// Annotation for secret name and namespace will be added to the pv object
+	// and used at pvc deletion time.
+	AnnDeletionProvisionerSecretRefName      = "volume.storage.kubernetes.io/provisioner-deletion-secret-name"
+	AnnDeletionProvisionerSecretRefNamespace = "volume.storage.kubernetes.io/provisioner-deletion-secret-namespace"
+
+	AnnDeletionControllerPublishSecretRefName      = "volume.storage.kubernetes.io/controller-publish-deletion-secret-name"
+	AnnDeletionControllerPublishSecretRefNamespace = "volume.storage.kubernetes.io/controller-publish-deletion-secret-namespace"
+
+	AnnDeletionControllerExpandSecretRefName      = "volume.storage.kubernetes.io/controller-expand-deletion-secret-name"
+	AnnDeletionControllerExpandSecretRefNamespace = "volume.storage.kubernetes.io/controller-expand-deletion-secret-namespace"
+
+	AnnDeletionNodePublishSecretRefName      = "volume.storage.kubernetes.io/node-publish-deletion-secret-name"
+	AnnDeletionNodePublishSecretRefNamespace = "volume.storage.kubernetes.io/node-publish-deletion-secret-namespace"
+
+	AnnDeletionNodeStageSecretRefName      = "volume.storage.kubernetes.io/node-stage-deletion-secret-name"
+	AnnDeletionNodeStageSecretRefNamespace = "volume.storage.kubernetes.io/node-stage-deletion-secret-namespace"
+
 	snapshotNotBound = "snapshot %s not bound"
 
 	pvcCloneFinalizer = "provisioner.storage.kubernetes.io/cloning-protection"
@@ -502,6 +519,12 @@ type prepareProvisionResult struct {
 	migratedVolume bool
 	req            *csi.CreateVolumeRequest
 	csiPVSource    *v1.CSIPersistentVolumeSource
+	pvAnnsecrets   map[string]secretDetails
+}
+
+type secretDetails struct {
+	name      string
+	namespace string
 }
 
 // prepareProvision does non-destructive parameter checking and preparations for provisioning a volume.
@@ -646,6 +669,7 @@ func (p *csiProvisioner) prepareProvision(ctx context.Context, claim *v1.Persist
 	if err != nil {
 		return nil, controller.ProvisioningNoChange, err
 	}
+
 	provisionerCredentials, err := getCredentials(ctx, p.client, provisionerSecretRef)
 	if err != nil {
 		return nil, controller.ProvisioningNoChange, err
@@ -690,11 +714,19 @@ func (p *csiProvisioner) prepareProvision(ctx context.Context, claim *v1.Persist
 		req.Parameters[pvNameKey] = pvName
 	}
 
+	secretMap := make(map[string]secretDetails)
+	secretMap["provisioner"] = secretDetails{name: provisionerSecretRef.Name, namespace: provisionerSecretRef.Namespace}
+	secretMap["controllerPublish"] = secretDetails{name: controllerPublishSecretRef.Name, namespace: controllerPublishSecretRef.Namespace}
+	secretMap["controllerExpand"] = secretDetails{name: controllerExpandSecretRef.Name, namespace: controllerExpandSecretRef.Namespace}
+	secretMap["nodePublish"] = secretDetails{name: nodePublishSecretRef.Name, namespace: nodePublishSecretRef.Namespace}
+	secretMap["nodeStage"] = secretDetails{name: nodeStageSecretRef.Name, namespace: nodeStageSecretRef.Namespace}
+
 	return &prepareProvisionResult{
 		fsType:         fsType,
 		migratedVolume: migratedVolume,
 		req:            &req,
 		csiPVSource:    csiPVSource,
+		pvAnnsecrets:   secretMap,
 	}, controller.ProvisioningNoChange, nil
 }
 
@@ -836,6 +868,47 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 				CSI: result.csiPVSource,
 			},
 		},
+	}
+
+	// Set AnnDeletionSecretRefName and AnnDeletionSecretRefNamespace
+	if result.pvAnnsecrets != nil {
+
+		for n, v := range result.pvAnnsecrets {
+			switch n {
+			case "provisioner":
+				klog.V(5).Infof("createVolumeOperation: set annotation [%s] on pv [%s].", AnnDeletionProvisionerSecretRefName, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionProvisionerSecretRefName, v.name)
+
+				klog.V(5).Infof("syncContent: set annotation [%s] on pv [%s].", AnnDeletionProvisionerSecretRefNamespace, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionProvisionerSecretRefNamespace, v.namespace)
+			case "controllerPublish":
+				klog.V(5).Infof("createVolumeOperation: set annotation [%s] on pv [%s].", AnnDeletionControllerPublishSecretRefName, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionControllerPublishSecretRefName, v.name)
+
+				klog.V(5).Infof("syncContent: set annotation [%s] on pv [%s].", AnnDeletionControllerPublishSecretRefNamespace, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionControllerPublishSecretRefNamespace, v.namespace)
+			case "controllerExpand":
+				klog.V(5).Infof("createVolumeOperation: set annotation [%s] on pv [%s].", AnnDeletionControllerExpandSecretRefName, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionControllerExpandSecretRefName, v.name)
+
+				klog.V(5).Infof("syncContent: set annotation [%s] on pv [%s].", AnnDeletionControllerExpandSecretRefNamespace, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionControllerExpandSecretRefNamespace, v.namespace)
+			case "nodePublish":
+				klog.V(5).Infof("createVolumeOperation: set annotation [%s] on pv [%s].", AnnDeletionNodePublishSecretRefName, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionNodePublishSecretRefName, v.name)
+
+				klog.V(5).Infof("syncContent: set annotation [%s] on pv [%s].", AnnDeletionNodePublishSecretRefNamespace, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionNodePublishSecretRefNamespace, v.namespace)
+			case "nodeStage":
+				klog.V(5).Infof("createVolumeOperation: set annotation [%s] on pv [%s].", AnnDeletionNodeStageSecretRefName, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionNodeStageSecretRefName, v.name)
+
+				klog.V(5).Infof("syncContent: set annotation [%s] on pv [%s].", AnnDeletionNodeStageSecretRefNamespace, pv.Name)
+				metav1.SetMetaDataAnnotation(&pv.ObjectMeta, AnnDeletionNodeStageSecretRefNamespace, v.namespace)
+			default:
+			}
+		}
+
 	}
 
 	if options.StorageClass.ReclaimPolicy != nil {
@@ -1154,39 +1227,45 @@ func (p *csiProvisioner) Delete(ctx context.Context, volume *v1.PersistentVolume
 	req := csi.DeleteVolumeRequest{
 		VolumeId: volumeId,
 	}
-	// get secrets if StorageClass specifies it
-	storageClassName := util.GetPersistentVolumeClass(volume)
-	if len(storageClassName) != 0 {
-		if storageClass, err := p.scLister.Get(storageClassName); err == nil {
-			if migratedVolume && storageClass.Provisioner == p.supportsMigrationFromInTreePluginName {
-				klog.V(2).Infof("translating storage class for in-tree plugin %s to CSI", storageClass.Provisioner)
-				storageClass, err = p.translator.TranslateInTreeStorageClassToCSI(p.supportsMigrationFromInTreePluginName, storageClass)
-				if err != nil {
-					return err
-				}
-			}
 
-			// Resolve provision secret credentials.
-			provisionerSecretRef, err := getSecretReference(provisionerSecretParams, storageClass.Parameters, volume.Name, &v1.PersistentVolumeClaim{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      volume.Spec.ClaimRef.Name,
-					Namespace: volume.Spec.ClaimRef.Namespace,
-				},
-			})
-			if err != nil {
-				return fmt.Errorf("failed to get secretreference for volume %s: %v", volume.Name, err)
-			}
+	// Check if annotation exists
+	if metav1.HasAnnotation(volume.ObjectMeta, AnnDeletionProvisionerSecretRefName) && metav1.HasAnnotation(volume.ObjectMeta, AnnDeletionProvisionerSecretRefNamespace) {
+		annDeletionSecretName := volume.Annotations[AnnDeletionProvisionerSecretRefName]
+		annDeletionSecretNamespace := volume.Annotations[AnnDeletionProvisionerSecretRefNamespace]
+		provisionerSecretRef := &v1.SecretReference{}
 
-			credentials, err := getCredentials(ctx, p.client, provisionerSecretRef)
-			if err != nil {
-				// Continue with deletion, as the secret may have already been deleted.
-				klog.Errorf("Failed to get credentials for volume %s: %s", volume.Name, err.Error())
-			}
-			req.Secrets = credentials
-		} else {
-			klog.Warningf("failed to get storageclass: %s, proceeding to delete without secrets. %v", storageClassName, err)
+		if annDeletionSecretName == "" || annDeletionSecretNamespace == "" {
+
+			return fmt.Errorf("cannot delete pv %#v, err: secret name or namespace not specified", volume.Name)
 		}
+
+		provisionerSecretRef.Name = annDeletionSecretName
+		provisionerSecretRef.Namespace = annDeletionSecretNamespace
+
+		credentials, err := getCredentials(ctx, p.client, provisionerSecretRef)
+		if err != nil {
+			// Continue with deletion, as the secret may have already been deleted.
+			klog.Errorf("Failed to get credentials for volume %s: %s", volume.Name, err.Error())
+		}
+		// TODO ( Humblec): do it for controllerPublish, expand, nodepublish and nodestage here?
+
+		/*
+			// get secrets if StorageClass specifies it
+			storageClassName := util.GetPersistentVolumeClass(volume)
+			if len(storageClassName) != 0 {
+				if storageClass, err := p.scLister.Get(storageClassName); err == nil {
+					if migratedVolume && storageClass.Provisioner == p.supportsMigrationFromInTreePluginName {
+						klog.V(2).Infof("translating storage class for in-tree plugin %s to CSI", storageClass.Provisioner)
+						storageClass, err = p.translator.TranslateInTreeStorageClassToCSI(p.supportsMigrationFromInTreePluginName, storageClass)
+						if err != nil {
+							return err
+						}
+					}
+		*/
+
+		req.Secrets = credentials
 	}
+
 	deleteCtx := markAsMigrated(ctx, migratedVolume)
 	deleteCtx, cancel := context.WithTimeout(deleteCtx, p.timeout)
 	defer cancel()
